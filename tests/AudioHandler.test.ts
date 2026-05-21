@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import axios from "axios";
+import { AudioHandler } from "../src/AudioHandler";
 import { DEFAULT_SETTINGS, PluginSettings } from "../src/SettingsManager";
+
+vi.mock("axios", () => ({
+	default: {
+		post: vi.fn(),
+	},
+}));
 
 // We test AudioHandler logic by extracting and testing the key behaviors
 // since the actual class depends heavily on Obsidian + axios
@@ -322,5 +330,125 @@ describe("file-menu audio extension matching", () => {
 	it("does not false-positive on partial extension matches", () => {
 		expect(isAudioFile("stamp3")).toBe(false);
 		expect(isAudioFile("camp3")).toBe(false);
+	});
+});
+
+describe("chunked recording transcription", () => {
+	beforeEach(() => {
+		vi.mocked(axios.post).mockReset();
+	});
+
+	function createPluginMock() {
+		const replaceRange = vi.fn();
+		const setCursor = vi.fn();
+		const writeBinary = vi.fn().mockResolvedValue(undefined);
+		const create = vi.fn().mockResolvedValue(undefined);
+		const createFolder = vi.fn().mockResolvedValue(undefined);
+
+		return {
+			settings: {
+				...DEFAULT_SETTINGS,
+				apiKey: "sk-whisper",
+				postProcessing: true,
+				postProcessingProvider: "openai",
+				openAiApiKey: "sk-openai",
+				createNoteFile: true,
+				noteSavePath: "notes",
+				audioSavePath: "audio",
+				noteFilenameTemplate: "{{title}}",
+				autoGenerateTitle: false,
+			},
+			app: {
+				vault: {
+					adapter: {
+						exists: vi.fn().mockResolvedValue(true),
+						writeBinary,
+					},
+					create,
+					createFolder,
+				},
+				workspace: {
+					getActiveViewOfType: vi.fn().mockReturnValue({
+						editor: {
+							getCursor: () => ({ line: 0, ch: 0 }),
+							replaceRange,
+							setCursor,
+						},
+					}),
+				},
+			},
+			mocks: {
+				replaceRange,
+				setCursor,
+				writeBinary,
+				create,
+				createFolder,
+			},
+		};
+	}
+
+	it("transcribes every chunk and post-processes the combined transcript once", async () => {
+		const plugin = createPluginMock();
+		vi.mocked(axios.post).mockImplementation(async (url, data) => {
+			if (url === plugin.settings.apiUrl) {
+				const file = (data as FormData).get("file") as File;
+				return {
+					data: {
+						text: file.name.includes("part-001")
+							? "first part"
+							: "second part",
+					},
+				};
+			}
+
+			return {
+				data: {
+					choices: [
+						{
+							message: {
+								content: "processed full transcript",
+							},
+						},
+					],
+				},
+			};
+		});
+
+		const handler = new AudioHandler(plugin as any);
+		await handler.sendAudioChunks(
+			[
+				new Blob([new ArrayBuffer(1500)], { type: "audio/webm" }),
+				new Blob([new ArrayBuffer(1500)], { type: "audio/webm" }),
+			],
+			"meeting.webm"
+		);
+
+		const whisperCalls = vi
+			.mocked(axios.post)
+			.mock.calls.filter(([url]) => url === plugin.settings.apiUrl);
+		const postProcessingCalls = vi
+			.mocked(axios.post)
+			.mock.calls.filter(
+				([url]) => url === plugin.settings.postProcessingUrl
+			);
+
+		expect(whisperCalls).toHaveLength(2);
+		expect(postProcessingCalls).toHaveLength(1);
+		expect(postProcessingCalls[0][1]).toMatchObject({
+			messages: [
+				{
+					role: "system",
+					content: DEFAULT_SETTINGS.postProcessingPrompt,
+				},
+				{ role: "user", content: "first part\n\nsecond part" },
+			],
+		});
+		expect(plugin.mocks.replaceRange).toHaveBeenCalledTimes(1);
+		expect(plugin.mocks.replaceRange).toHaveBeenCalledWith(
+			"processed full transcript",
+			{ line: 0, ch: 0 }
+		);
+		expect(plugin.mocks.create).toHaveBeenCalledTimes(1);
+		expect(plugin.mocks.writeBinary).toHaveBeenCalledTimes(1);
 	});
 });

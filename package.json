@@ -77,5 +77,10 @@
 				}
 			}
 		}
+	},
+	"pnpm": {
+		"onlyBuiltDependencies": [
+			"esbuild"
+		]
 	}
 }

@@ -1,9 +1,10 @@
 import { Notice } from "obsidian";
+import { AudioChunkBuffer } from "./AudioChunker";
 
 export interface AudioRecorder {
 	startRecording(): Promise<void>;
 	pauseRecording(): Promise<void>;
-	stopRecording(): Promise<Blob>;
+	stopRecording(): Promise<Blob[]>;
 }
 
 function getSupportedMimeType(): string | undefined {
@@ -29,7 +30,7 @@ function getSupportedMimeType(): string | undefined {
 }
 
 export class NativeAudioRecorder implements AudioRecorder {
-	private chunks: BlobPart[] = [];
+	private chunkBuffer = new AudioChunkBuffer();
 	private recorder: MediaRecorder | null = null;
 	private mimeType: string | undefined;
 	private deviceId: string | null = null;
@@ -61,12 +62,14 @@ export class NativeAudioRecorder implements AudioRecorder {
 				if (!this.mimeType) {
 					throw new Error("No supported mimeType found");
 				}
+				this.chunkBuffer.setMimeType(this.mimeType);
+				this.chunkBuffer.reset();
 
 				const options = { mimeType: this.mimeType };
 				const recorder = new MediaRecorder(stream, options);
 
 				recorder.addEventListener("dataavailable", (e: BlobEvent) => {
-					this.chunks.push(e.data);
+					this.chunkBuffer.add(e.data);
 				});
 
 				this.recorder = recorder;
@@ -92,20 +95,15 @@ export class NativeAudioRecorder implements AudioRecorder {
 		}
 	}
 
-	async stopRecording(): Promise<Blob> {
+	async stopRecording(): Promise<Blob[]> {
 		return new Promise((resolve) => {
 			if (!this.recorder || this.recorder.state === "inactive") {
-				const blob = new Blob(this.chunks, { type: this.mimeType });
-				this.chunks.length = 0;
-				resolve(blob);
+				resolve(this.chunkBuffer.finish());
 			} else {
 				this.recorder.addEventListener(
 					"stop",
 					() => {
-						const blob = new Blob(this.chunks, {
-							type: this.mimeType,
-						});
-						this.chunks.length = 0;
+						const blobs = this.chunkBuffer.finish();
 
 						// will stop all the tracks associated with the stream, effectively releasing any resources (like the mic) used by them
 						if (this.recorder) {
@@ -115,7 +113,7 @@ export class NativeAudioRecorder implements AudioRecorder {
 							this.recorder = null;
 						}
 
-						resolve(blob);
+						resolve(blobs);
 					},
 					{ once: true }
 				);

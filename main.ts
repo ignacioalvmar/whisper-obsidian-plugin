@@ -125,12 +125,12 @@ export default class Whisper extends Plugin {
 			return;
 		}
 		this.statusBar.updateStatus(RecordingStatus.Processing);
-		const audioBlob = await this.recorder.stopRecording();
+		const audioBlobs = await this.recorder.stopRecording();
 		const extension = getExtensionFromMimeType(this.recorder.getMimeType());
 		const fileName = `${new Date()
 			.toISOString()
 			.replace(/[:.]/g, "-")}.${extension}`;
-		await this.audioHandler.sendAudioData(audioBlob, fileName);
+		await this.audioHandler.sendAudioChunks(audioBlobs, fileName);
 		this.statusBar.updateStatus(RecordingStatus.Idle);
 	}
 
